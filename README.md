@@ -1,4 +1,4 @@
-# Terraform Azure Deployment with Volterra Integration
+# Customer Edge (CE) with Public IP Assignment (Usable for All Normal Use Cases)
 
 ## Overview
 
