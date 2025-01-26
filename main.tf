@@ -173,6 +173,8 @@ resource "azurerm_public_ip" "public_ips" {
   location            = var.location
   resource_group_name = var.resource_group_name
   allocation_method   = "Static"
+  sku                 = "Standard"
+  zones               = [var.az_name[count.index]]
 
   tags = var.tags
 }
@@ -252,6 +254,7 @@ resource "azurerm_linux_virtual_machine" "vm" {
     (count.index + 1) * var.num_nics
   )
    size             = var.vm_size
+   zone = var.az_name[count.index] 
 
   source_image_reference {
     publisher = var.image.publisher
