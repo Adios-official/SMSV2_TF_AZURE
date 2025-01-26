@@ -118,9 +118,17 @@ public_key_config = {
   existing_azure_ssh_key = "xxxxxx"  # Leave empty if create_new_keypair = true. Only the name of the key that exists in azure. No need of full resource ID as in other resources.
 }
 
+##############################################################################################################################
+# BLOCK 7 # AVAILABILITY ZONE DETAILS
+# Provide distinct Availability zone values for each node if 3 nodes
+##############################################################################################################################
+# Availability Zones (ensure these match the number of nodes if num_nodes = 3)
+# CHANGE THIS
+
+az_name = ["1","2","3"]  #Add 3 zones if num_noes is 3. Azure follows AZ naming in a format 1 or 2 or 3, not like other clouds.
 
 ##############################################################################################################################
-# BLOCK 7 # API CREDENTIAL DETAILS , TENANT DETAILS FROM DISTRIBUTED CLOUD
+# BLOCK 8 # API CREDENTIAL DETAILS , TENANT DETAILS FROM DISTRIBUTED CLOUD
 ##############################################################################################################################
 
 # These are arguments to supply your API credentials for interacting with the XC Tenant
