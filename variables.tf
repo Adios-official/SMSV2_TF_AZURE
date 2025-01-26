@@ -17,6 +17,12 @@ variable "vnet_name" {
   type        = string
 }
 
+variable "az_name" {
+  description = "List of availability zone names for each node"
+  type        = list(string)
+  default     = ["1","2","3"]  # Example for 3 zones, adjust as per your region's available zones
+}
+
 ##############################################################################################################################
 # BLOCK 2 #  BASIC VARIABLES FOR VIRTUAL MACHINES
 ##############################################################################################################################
