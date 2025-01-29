@@ -70,8 +70,8 @@ public_ip_config = {
 security_group_config = {
   create_slo_sg     = false     # Set to true to create NSG for attaching to SLO
   create_sli_sg     = false     # Set to true to create NSG for attaching to SLI
-  existing_slo_sg_id = "/subscriptions/b55db69e-193c-4f2c-93ca-117cbb9f62b7/resourceGroups/adios-xc-smsv2-rg/providers/Microsoft.Network/networkSecurityGroups/test-nsg-slo"    # Leave empty if create_slo_sg is true, otherwise provide existing Security group IDs for SLO interface
-  existing_sli_sg_id = "/subscriptions/b55db69e-193c-4f2c-93ca-117cbb9f62b7/resourceGroups/adios-xc-smsv2-rg/providers/Microsoft.Network/networkSecurityGroups/test-nsg-sli"      # Leave empty if create_sli_sg is true, otherwise provide existing Security group  IDs for SLI interface
+  existing_slo_sg_id = "/subscriptions/xxxxxxx/resourceGroups/xxxxxxx/providers/Microsoft.Network/networkSecurityGroups/xxxxxxx"    # Leave empty if create_slo_sg is true, otherwise provide existing Security group IDs for SLO interface
+  existing_sli_sg_id = "/subscriptions/xxxxxxx/resourceGroups/xxxxxxx/providers/Microsoft.Network/networkSecurityGroups/xxxxxxx"      # Leave empty if create_sli_sg is true, otherwise provide existing Security group  IDs for SLI interface
 }
 
 
