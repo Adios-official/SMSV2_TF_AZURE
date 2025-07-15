@@ -208,14 +208,15 @@ public_ip_address_id = count.index % var.num_nics == 0 ? (var.public_ip_config.c
 }
 
 ##############################################################################################################################
-# BLOCK 8 # Associate NSG with Network Interfaces 
+# BLOCK 8 # Associate NSG with Network Interfaces
 ##############################################################################################################################
 # For SLO NSG associations
 resource "azurerm_network_interface_security_group_association" "slo_nsg_associations" {
   for_each = { for idx, nic in azurerm_network_interface.nics : idx => nic if idx % var.num_nics == 0 }
 
   network_interface_id      = each.value.id
-  network_security_group_id = var.security_group_config.create_slo_sg ? azurerm_network_security_group.slo_nsg[floor(each.key / var.num_nodes)].id : var.security_group_config.existing_slo_sg_id
+  # CORRECTED a node's index is calculated by dividing the nic index by the number of nics per node.
+  network_security_group_id = var.security_group_config.create_slo_sg ? azurerm_network_security_group.slo_nsg[floor(each.key / var.num_nics)].id : var.security_group_config.existing_slo_sg_id
 
   depends_on = [
     azurerm_network_security_group.slo_nsg,
@@ -228,14 +229,14 @@ resource "azurerm_network_interface_security_group_association" "sli_nsg_associa
   for_each = { for idx, nic in azurerm_network_interface.nics : idx => nic if idx % var.num_nics != 0 }
 
   network_interface_id      = each.value.id
-  network_security_group_id = var.security_group_config.create_sli_sg ? azurerm_network_security_group.sli_nsg[floor(each.key / var.num_nodes)].id : var.security_group_config.existing_sli_sg_id
+  # CORRECTED a node's index is calculated by dividing the nic index by the number of nics per node.
+  network_security_group_id = var.security_group_config.create_sli_sg ? azurerm_network_security_group.sli_nsg[floor(each.key / var.num_nics)].id : var.security_group_config.existing_sli_sg_id
 
   depends_on = [
     azurerm_network_security_group.sli_nsg,
     azurerm_network_interface.nics
   ]
 }
-
 
 
 ##############################################################################################################################
