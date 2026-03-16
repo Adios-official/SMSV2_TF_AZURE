@@ -1,3 +1,4 @@
+
 terraform {
   required_providers {
     azurerm = {
@@ -6,7 +7,7 @@ terraform {
     }
     volterra = {
       source = "volterraedge/volterra"
-      version = "0.11.42"
+      version = "0.11.44"
     }
   }
 }
