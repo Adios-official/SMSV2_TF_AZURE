@@ -1,62 +1,75 @@
-##############################################################################################################################
-# BLOCK 1 #  AZURE BASIC VARIABLES
-##############################################################################################################################
+################################################################################
+# 1. F5 DISTRIBUTED CLOUD (XC) API CREDENTIALS
+################################################################################
 
-variable "location" {
-  description = "Azure region to deploy the resources"
+variable "api_p12_file" {
+  description = "Path to the F5 XC API credential file (PKCS12)"
   type        = string
 }
 
-variable "resource_group_name" {
-  description = "Name of the Azure Resource Group"
+variable "api_url" {
+  description = "F5 XC API URL (e.g., 'https://<tenant>.console.ves.volterra.io/api')"
   type        = string
 }
 
-variable "vnet_name" {
-  description = "Name of the Azure VNET"
+################################################################################
+# 2. DEPLOYMENT MODEL & SITE VARIABLES
+################################################################################
+
+variable "deployment_model" {
+  description = "The logical deployment model: 'cluster' (standard HA site) or 'vsite' (multiple independent sites grouped by a virtual_site)."
   type        = string
-}
+  default     = "cluster"
 
-variable "az_name" {
-  description = "List of availability zone names for each node"
-  type        = list(string)
-  default     = ["1","2","3"]  # Example for 3 zones, adjust as per your region's available zones
+  validation {
+    condition     = contains(["cluster", "vsite"], var.deployment_model)
+    error_message = "The deployment_model must be either 'cluster' or 'vsite'."
+  }
 }
-
-##############################################################################################################################
-# BLOCK 2 #  BASIC VARIABLES FOR VIRTUAL MACHINES
-##############################################################################################################################
 
 variable "cluster_name" {
-  description = "Base name for the virtual machines"
+  description = "Base name for the F5 XC site(s) and Azure resources. Must be a valid DNS-1035 label."
+  type        = string
+
+  validation {
+    # This regex enforces DNS-1035 label requirements
+    condition     = can(regex("^[a-z]([a-z0-9-]*[a-z0-9])?$", var.cluster_name))
+    error_message = "Invalid cluster_name: Must consist of lower case alphanumeric characters or '-', start with a letter, and end with an alphanumeric character."
+  }
+}
+
+variable "num_nodes" {
+  description = "Number of CE nodes to create. 'cluster' model supports 1 or 3. 'vsite' model supports 1, 2, or 3."
+  type        = number
+  # Validation for this is handled by a 'check' block in main.tf
+}
+
+variable "num_nics" {
+  description = "Number of network interfaces per node: 1 (SLO only) or 2 (SLO + SLI)."
+  type        = number
+
+  validation {
+    condition     = contains([1, 2], var.num_nics)
+    error_message = "The number of NICs must be either 1 or 2."
+  }
+}
+
+################################################################################
+# 3. AZURE COMPUTE & IMAGE VARIABLES
+################################################################################
+
+variable "location" {
+  description = "Azure region to deploy resources (e.g., 'Germany West Central')"
   type        = string
 }
 
 variable "vm_size" {
-  description = "Size of the virtual machines"
+  description = "Azure VM size for the CE nodes (e.g., 'Standard_DS3_v2')"
   type        = string
 }
 
-variable "num_nodes" {
-  description = "Number of nodes to create (1 or 3)"
-  type        = number
-  validation {
-    condition     = contains([1, 3], var.num_nodes)
-    error_message = "The number of nodes must be either 1 or 3. The value '2' or any other value is not supported."
-  }
-}
-
-variable "num_nics" {
-  description = "Number of NICs per virtual machine (1 for single NIC, 2 for dual NIC)"
-  type        = number
-  validation {
-    condition     = contains([1, 2], var.num_nics)
-    error_message = "The number of Interfaces must be either 1 or 2. Any other value is not supported in this code."
-  }
-}
-
 variable "image" {
-  description = "VM image details (publisher, offer, sku, version)"
+  description = "Azure Image reference details for the F5 XC CE nodes"
   type = object({
     publisher = string
     offer     = string
@@ -65,125 +78,76 @@ variable "image" {
   })
 }
 
-variable "tags" {
-  description = "Tags for Azure resources"
-  type        = map(string)
+variable "os_disk" {
+  description = "Azure OS Disk configuration"
+  type = object({
+    size_gb = number
+    type    = string
+  })
 }
 
-##############################################################################################################################
-# BLOCK 3 #  NETWORKING AND PUBLIC IP VARIABLES
-##############################################################################################################################
-
-
-variable "sli_subnet_ids" {
-  description = "List of subnet IDs for the virtual network (1 for single node, 3 for HA setup)"
+variable "az_name" {
+  description = "List of Azure Availability Zones. The number of zones must match 'var.num_nodes'."
   type        = list(string)
+}
+
+variable "tags" {
+  description = "A map of custom Azure tags to apply to all created resources"
+  type        = map(string)
+  default     = {}
+}
+
+################################################################################
+# 4. AZURE NETWORKING & SECURITY VARIABLES
+################################################################################
+
+variable "resource_group_name" {
+  description = "Name of the Azure Resource Group"
+  type        = string
+}
+
+variable "vnet_name" {
+  description = "Name of the Azure Virtual Network (VNet)"
+  type        = string
 }
 
 variable "slo_subnet_ids" {
-  description = "List of subnet IDs for the virtual network (1 for single node, 3 for HA setup)"
+  description = "List of Subnet Resource IDs for the SLO (eth0) interface. Must match 'var.num_nodes'."
   type        = list(string)
 }
 
-variable "public_ip_config" {
-  description = "Public IP configuration for the VMs"
-  type = object({
-    create_public_ip = bool
-    existing_public_ip_ids = list(string)
-  })
-  default = {
-    create_public_ip = true
-    existing_public_ip_ids = []
-  }
-  validation {
-    condition = (
-      var.public_ip_config.create_public_ip && length(var.public_ip_config.existing_public_ip_ids) == 0 ||
-      !var.public_ip_config.create_public_ip && length(var.public_ip_config.existing_public_ip_ids) != 0
-    )
-    error_message = "Validation failed: If 'create_public_ip' is true, 'existing_public_ip_ids' should be empty. If false, it must match 'num_nodes'."
-  }
+variable "sli_subnet_ids" {
+  description = "List of Subnet Resource IDs for the SLI (eth1) interface. Only used if 'num_nics = 2'."
+  type        = list(string)
+  default     = []
 }
 
-##############################################################################################################################
-# BLOCK 4 # SECURITY GROUP VARIABLES
-##############################################################################################################################
-
-# Security Group Configuration as an object
-variable "security_group_config" {
-  description = <<EOT
-Configuration for Security Groups:
-- create_slo_sg: Boolean to indicate whether to create a new SLO security group.
-- create_sli_sg: Boolean to indicate whether to create a new SLI security group (only if num_nics == 2).
-- existing_slo_sg_id: Existing security group ID for SLO (required if create_slo_sg is false).
-- existing_sli_sg_id: Existing security group ID for SLI (required if create_sli_sg is false).
-EOT
+variable "public_ip_config" {
+  description = "Configuration for Azure Public IPs."
   type = object({
-    create_slo_sg     = bool
-    create_sli_sg     = bool
+    create_public_ip       = bool
+    existing_public_ip_ids = list(string)
+  })
+}
+
+variable "security_group_config" {
+  description = "Configuration for SLO and SLI Network Security Groups (NSGs)."
+  type = object({
+    create_slo_sg      = bool
+    create_sli_sg      = bool
     existing_slo_sg_id = string
     existing_sli_sg_id = string
   })
-
-  # Combined validation for both SLO and SLI security groups
-# Combined validation for both SLO and SLI security groups
-validation {
-  condition = (
-    # SLO security group validation
-    (var.security_group_config.create_slo_sg && length(var.security_group_config.existing_slo_sg_id) == 0) || 
-    (var.security_group_config.create_slo_sg == false && length(var.security_group_config.existing_slo_sg_id) > 0)
-  ) && (
-    # SLI security group validation 
-      (var.security_group_config.create_sli_sg && length(var.security_group_config.existing_sli_sg_id) == 0) ||
-      (var.security_group_config.create_sli_sg == false && length(var.security_group_config.existing_sli_sg_id) > 0)   
-  )
-    error_message = <<EOT
-Invalid security group configuration. Please ensure that:
-  - If create_slo_sg is false, existing_slo_sg_id must be provided.
-  - If create_slo_sg is true, existing_slo_sg_id must be empty.
-  - If create_sli_sg is false, existing_sli_sg_id must be provided.
-  - If create_sli_sg is true, existing_sli_sg_id must be empty.
-EOT
- }
-}
-##############################################################################################################################
-# BLOCK 5 # STORAGE VARIABLES
-##############################################################################################################################
-
-variable "os_disk" {
-  description = "OS Disk configuration for the VMs"
-  type = object({
-    size_gb   = number
-    type      = string
-  })
 }
 
-##############################################################################################################################
-# BLOCK 6 # SSH KEY VARIABLES
-##############################################################################################################################
+################################################################################
+# 5. AZURE SSH KEY VARIABLES
+################################################################################
+
 variable "public_key_config" {
-  description = "Configuration for SSH public key management, including options to create a new key pair or use an existing Azure SSH public key."
+  description = "Configuration for the SSH key pair used for VM access."
   type = object({
-    create_new_keypair      = bool
+    create_new_keypair     = bool
     existing_azure_ssh_key = string
   })
-  default = {
-    create_new_keypair      = true
-    existing_azure_ssh_key = ""
-  }
 }
-
-
-##############################################################################################################################
-# BLOCK 7 # AVAILABILITY ZONE DETAILS , TENANT DETAILS FROM DISTRIBUTED CLOUD
-##############################################################################################################################
-
-variable "api_p12_file" {
-  description = "Path to the Volterra API Key"
-  type        = string
-}
-
-variable "api_url" {
-  description = "Volterra API URL"
-  type        = string
-}
-
