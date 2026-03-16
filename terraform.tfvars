@@ -1,139 +1,151 @@
-##############################################################################################################################
-# BLOCK 1 #  BASIC AZURE VARIABLES
-##############################################################################################################################
-# Azure Region
-# CHANGE THIS
+################################################################################
+# 1. F5 DISTRIBUTED CLOUD (XC) API CREDENTIALS
+################################################################################
+
+# Path to your F5 XC API credential file (p12)
+api_p12_file = "your-tenant.console.ves.volterra.io.api-creds.p12"
+
+# URL for the F5 XC API
+api_url = "https://your-tenant.console.ves.volterra.io/api"
+
+################################################################################
+# 2. DEPLOYMENT MODEL & SITE CONFIGURATION
+################################################################################
+
+# The logical deployment model.
+# - "cluster": Creates 1 XC site object. HA is enabled if num_nodes = 3.
+# - "vsite":   Creates 1 XC site object PER NODE (e.g., 3 nodes = 3 sites).
+#              These sites are grouped by a single virtual_site. HA is
+#              always disabled for each site object.
+deployment_model = "vsite"
+
+#-------------------------------------------------------------------------------
+# IMPORTANT NOTE ON DEPLOYMENT MODEL:
+#
+# "cluster": Use this for a standard single-site or 3-node HA deployment.
+#   - 1 or 3 nodes.
+#   - 1 `volterra_securemesh_site_v2` resource.
+#   - 1 `volterra_token` (shared by all nodes).
+#
+# "vsite": Use this to deploy multiple, independent nodes as a single logical group.
+#   - 1, 2, or 3 nodes.
+#   - Creates `num_nodes` (e.g., 2) `volterra_securemesh_site_v2` resources.
+#   - Creates `num_nodes` (e.g., 2) `volterra_token` resources (one per node).
+#   - Creates 1 `volterra_virtual_site` to group them all.
+#-------------------------------------------------------------------------------
+
+# Base name for the site(s) and Azure resources. Must be a valid DNS-1035 label.
+cluster_name = "f5-xc-azure-site"
+
+# Number of CE nodes to deploy.
+# - If deployment_model = "cluster", must be 1 or 3.
+# - If deployment_model = "vsite", can be 1, 2, or 3.
+num_nodes = 1
+
+# Number of network interfaces (NICs) per node.
+# - 1 = Single-NIC (SLO only)
+# - 2 = Dual-NIC (SLO + SLI)
+num_nics = 2
+
+################################################################################
+# 3. AZURE COMPUTE & IMAGE CONFIGURATION
+################################################################################
+
+# Azure Region where resources will be deployed
 location = "Germany West Central"
 
-# Resource Group Information
-# CHANGE THIS
-resource_group_name = "xxxxxxxxx"
+# Azure VM Instance Size (medium node : "Standard_D8_v4" | Ref : https://docs.cloud.f5.com/docs-v2/multi-cloud-network-connect/reference/ce-site-size-ref)
+# (Medium: 8 vCPUs and 32 GB RAM - Standard_D8_v4)
+# (Large: 16 vCPUs and 64 GB RAM - Standard_D16_v4)
+vm_size = "Standard_D8_v4"
 
-#Virtual Network Details
-# CHANGE THIS
-vnet_name = "xxxxxxxxx"
-
-##############################################################################################################################
-# BLOCK 2 #  BASIC VARIABLES FOR VIRTUAL MACHINES
-# AZURE Instance Information - Resources required per node: Minimum 4 vCPUs, 14 GB RAM, and 80 GB disk storage
-# CHANGE THESE VALUES AS PER YOUR USE-CASE
-##############################################################################################################################
-
-cluster_name = "azure-smsv2-3node-2nic"   # Name for the customer Edge ( Each node will take this name followed by suffix like node-1, node-2 etc. )
-num_nodes    = 3                            # Choose if you need a Single Node CE or an HA CE with 3 Nodes
-num_nics     = 2                            # Use 1 for single NIC or 2 for dual NIC. 
-vm_size      = "Standard_DS3_v2"            # SMALL :Standard_DS3_v2, Medium :Standard_DS4_v2, Large:Standard_DS5_v2
-
-# Image details for the VMs
-# Confirm latest image details with the F5 Engineer
-image = {                                   # Azure Image reference
+# Azure Image details for the F5 XC CE nodes
+image = {
   publisher = "f5-networks"
   offer     = "f5xc_customer_edge"
   sku       = "f5xccebyol"
-  version   = "2024.40.2"
+  version   = "9.2025.17" # Replace with latest version from F5 XC documentation
 }
 
-#storage variables
+# Root disk configuration for each node
 os_disk = {
-  size_gb    = 80                          # Disk size in GB. 80 GB is minimum. (default size depends on the AMI, but you can override it).
-  type       = "Standard_LRS"              # ["Premium_LRS" "Standard_LRS" "StandardSSD_LRS" "StandardSSD_ZRS" "Premium_ZRS"]
+  size_gb = 80             # Disk size in GB (min 120 GB)
+  type    = "Standard_LRS" # Azure Storage Account type (Standard_LRS, Premium_LRS, etc.)
 }
-tags = {                                    # Tags you would like to add to the nodes in the CE cluster. 
+
+# Azure Availability Zones. 
+# NOTE: The number of items in this list MUST match 'num_nodes'.
+az_name = [
+  "1", # For node-1
+  # "2", # For node-2 (uncomment if num_nodes > 1)
+  # "3", # For node-3 (uncomment if num_nodes = 3)
+]
+
+# Custom tags to apply to all created Azure resources
+tags = {
   Environment = "Development"
-  Owner       = "your.email@example.com"
+  Project     = "F5XC"
+  Owner       = "user@example.com"
 }
 
-##############################################################################################################################
-# BLOCK 3 # PUBLIC IP ASSIGNMENT VARIABLES
-##############################################################################################################################
+################################################################################
+# 4. AZURE NETWORKING & SECURITY CONFIGURATION
+################################################################################
 
-# Public IP configuration (either create new Public IPs or use existing ones)
-# These are the Azure Public IPs that would be then assigned to the SLO interface 
-# If you don't want IPs to be created by the code, you can use your existing IPs by choosing create_public_ip as false and providing existing_public_ip_ids
-# FORMAT (existing_public_ip_ids): /subscriptions/<Subscription ID>/resourceGroups/<Resource Group Name>/providers/Microsoft.Network/publicIPAddresses/<Public IP Address Name>
-# CHANGE THIS AS PER NEED
-public_ip_config = {
-  create_public_ip = true             # Set to true to create and assign public IPs to VMs
-  existing_public_ip_ids = []         # Leave empty if create_public_ip = true  
-            
-}
+# Resource Group and VNet where the nodes will be deployed
+resource_group_name = "your-resource-group"
+vnet_name           = "your-vnet-name"
 
-##############################################################################################################################
-# BLOCK 4 # SECURITY GROUP DETAILS
-##############################################################################################################################
-# Security group configuration (either create new Security groups or use existing ones)
-# When you choose to create new Security groups , the code creates a security group which has an allow all policy.
-# If you want to add further rules, you can add in main.tf or you add additional rules to the security group after the site provisioning is complete.
-#FORMAT (existing_slo_sg_id/existing_sli_sg_id) : /subscriptions/<Subscription ID>/resourceGroups/<Resource Group Name>/providers/Microsoft.Network/networkSecurityGroups/<NSG Name>
-# CHANGE THIS AS PER NEED
-
-security_group_config = {
-  create_slo_sg     = false     # Set to true to create NSG for attaching to SLO
-  create_sli_sg     = false     # Set to true to create NSG for attaching to SLI
-  existing_slo_sg_id = "/subscriptions/xxxxxxx/resourceGroups/xxxxxxx/providers/Microsoft.Network/networkSecurityGroups/xxxxxxx"    # Leave empty if create_slo_sg is true, otherwise provide existing Security group IDs for SLO interface
-  existing_sli_sg_id = "/subscriptions/xxxxxxx/resourceGroups/xxxxxxx/providers/Microsoft.Network/networkSecurityGroups/xxxxxxx"      # Leave empty if create_sli_sg is true, otherwise provide existing Security group  IDs for SLI interface
-}
-
-
-##############################################################################################################################
-# BLOCK 5 #  NETWORKING AND NETWORK INTERFACES FOR NODES
-# 5.1 SLO CONFIG 
-# Provide distinct SLO subnet values for each node if 3 nodes
-##############################################################################################################################
-
-# Subnet IDs (ensure these match the number of nodes if num_nodes = 3)
-# Add your Subnet IDs here for SLO, 1 for each node in case of 3 nodes. For 1 node just 1 value is enough in the list.
-# FORMAT(slo_subnet_ids): /subscriptions/<Subscription ID>/resourceGroups/<Resource Group Name>/providers/Microsoft.Network/virtualNetworks/<VNet Name>/subnets/<Subnet Name>
-# CHANGE THIS
+# --- Site Local Outside (SLO) Network ---
+# Subnet Resource IDs for the SLO (eth0) interface.
+# NOTE: The number of items in this list MUST match 'num_nodes'.
 slo_subnet_ids = [
-  "/subscriptions/xxxxxxx/resourceGroups/xxxxxxxxx/providers/Microsoft.Network/virtualNetworks/xxxxxxx/subnets/xxxxxxx",
-  "/subscriptions/xxxxxxx/resourceGroups/xxxxxxxxx/providers/Microsoft.Network/virtualNetworks/xxxxxxx/subnets/xxxxxxx",
-  "/subscriptions/xxxxxxx/resourceGroups/xxxxxxxxx/providers/Microsoft.Network/virtualNetworks/xxxxxxx/subnets/xxxxxxx"
+  "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Network/virtualNetworks/<VNET>/subnets/slo-1",
+  # "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Network/virtualNetworks/<VNET>/subnets/slo-2",
+  # "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Network/virtualNetworks/<VNET>/subnets/slo-3"
 ]
 
-##############################################################################################################################
-# BLOCK 5 #  NETWORKING AND NETWORK INTERFACES FOR NODES
-# 5.2 SLI CONFIG 
-# VALUES ARE ONLY CONSUMED IF YOU NEED DUAL NIC AND YOU HAVE GIVEN num_nics = 2
-# Provide distinct SLI subnet values for each node if 3 nodes
-##############################################################################################################################
-
-# Subnet IDs (ensure these match the number of nodes if num_nodes = 3)
-# Add your Subnetwork/Subnet name here for SLI, 1 for each node in case of 3 nodes. For 1 node just 1 value is enough in the list.
-# FORMAT(sli_subnet_ids): /subscriptions/<Subscription ID>/resourceGroups/<Resource Group Name>/providers/Microsoft.Network/virtualNetworks/<VNet Name>/subnets/<Subnet Name>
-# CHANGE THIS
+# --- Site Local Inside (SLI) Network (Used only if num_nics = 2) ---
+# Subnet Resource IDs for the SLI (eth1) interface.
+# NOTE: The number of items in this list MUST match 'num_nodes' if num_nics = 2.
 sli_subnet_ids = [
-  "/subscriptions/xxxxxxx/resourceGroups/xxxxxxxxx/providers/Microsoft.Network/virtualNetworks/xxxxxxx/subnets/xxxxxxx",
-  "/subscriptions/xxxxxxx/resourceGroups/xxxxxxxxx/providers/Microsoft.Network/virtualNetworks/xxxxxxx/subnets/xxxxxxx",
-  "/subscriptions/xxxxxxx/resourceGroups/xxxxxxxxx/providers/Microsoft.Network/virtualNetworks/xxxxxxx/subnets/xxxxxxx"
+  "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Network/virtualNetworks/<VNET>/subnets/sli-1",
+  # "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Network/virtualNetworks/<VNET>/subnets/sli-2",
+  # "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Network/virtualNetworks/<VNET>/subnets/sli-3"
 ]
 
-##############################################################################################################################
-# BLOCK 6 # SSH KEY DETAILS
-# SSH key if needs to be freshly created or use an existing one on azure
-# When you choose to create new key pair , the code creates a key pair which is placed in a folder "keys" in present working directory
-##############################################################################################################################
-public_key_config = {
-  create_new_keypair    = false      # Set to true to create new key pair locally and use that in azure. Note : Via terraform you cannot generate private key in azure as in UI.
-  existing_azure_ssh_key = "xxxxxx"  # Leave empty if create_new_keypair = true. Only the name of the key that exists in azure. No need of full resource ID as in other resources.
+# --- Public IP Assignment ---
+# Configure how Public IPs are handled for the SLO interface.
+public_ip_config = {
+  create_public_ip       = true # Set to true to create and assign new Azure Public IPs
+  existing_public_ip_ids = []   # Provide Resource IDs if create_public_ip = false
 }
 
-##############################################################################################################################
-# BLOCK 7 # AVAILABILITY ZONE DETAILS
-# Provide distinct Availability zone values for each node if 3 nodes
-##############################################################################################################################
-# Availability Zones (ensure these match the number of nodes if num_nodes = 3)
-# CHANGE THIS
+# --- Network Security Groups (NSGs) ---
+# Configure NSGs for SLO and SLI interfaces.
+security_group_config = {
+  # Set to 'true' to create new, open NSGs. 'false' to use existing.
+  create_slo_sg      = true
+  create_sli_sg      = true
 
-az_name = ["1","2","3"]  #Add 3 zones if num_noes is 3. Azure follows AZ naming in a format 1 or 2 or 3, not like other clouds.
+  # Provide NSG Resource ID if create_slo_sg = false
+  existing_slo_sg_id = ""
 
-##############################################################################################################################
-# BLOCK 8 # API CREDENTIAL DETAILS , TENANT DETAILS FROM DISTRIBUTED CLOUD
-##############################################################################################################################
+  # Provide NSG Resource ID if create_sli_sg = false (and num_nics = 2)
+  existing_sli_sg_id = ""
 
-# These are arguments to supply your API credentials for interacting with the XC Tenant
-# CHANGE THIS
+  #-----------------------------------------------------------------------------
+  # NOTE ON SLI SECURITY GROUP:
+  # If 'num_nics' is set to 1, the 'create_sli_sg' and 'existing_sli_sg_id'
+  # settings are safely ignored.
+  #-----------------------------------------------------------------------------
+}
 
-api_p12_file = "xxxxxxx.console.ves.volterra.io.api-creds.p12"
-api_url      = "https://xxxxxxx.console.ves.volterra.io/api"
+################################################################################
+# 5. SSH KEY DETAILS
+################################################################################
 
+public_key_config = {
+  create_new_keypair     = true    # Set to true to generate a new key pair locally
+  existing_azure_ssh_key = "none"  # Name of existing Azure SSH Key if create_new = false
+}
