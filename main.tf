@@ -1,47 +1,52 @@
-##############################################################################################################################
-# BLOCK 1 #  Create SMSV2 site object on XC
-##############################################################################################################################
-resource "volterra_securemesh_site_v2" "smsv2-site-object" {
-  name      = var.cluster_name
-  namespace = "system"
-  block_all_services = true
-  logs_streaming_disabled = true
- # Conditionally set HA based on num_nodes
-  # Set HA based on num_nodes
-  disable_ha = var.num_nodes == 1 ? true : false
-  enable_ha  = var.num_nodes == 3 ? true : false
+################################################################################
+# 0. INPUT VALIDATIONS
+################################################################################
 
-  re_select {
-    geo_proximity = true
-  }
-
-  azure {
-    not_managed {}
-    }
-
-  lifecycle {
-    ignore_changes = [
-    labels
-    ]
+check "valid_node_count_for_model" {
+  assert {
+    condition = (
+      (var.deployment_model == "cluster" && contains([1, 3], var.num_nodes)) ||
+      (var.deployment_model == "vsite" && contains([1, 2, 3], var.num_nodes))
+    )
+    error_message = "Invalid node count: For 'cluster' model, num_nodes must be 1 or 3. For 'vsite' model, num_nodes can be 1, 2, or 3."
   }
 }
 
-##############################################################################################################################
-# BLOCK 2 #  Create site token on XC
-##############################################################################################################################
-resource "volterra_token" "smsv2-token" {
-  name      = "${volterra_securemesh_site_v2.smsv2-site-object.name}-token"
-  namespace = "system"
-  type      = 1
-  site_name = volterra_securemesh_site_v2.smsv2-site-object.name
-
-  depends_on = [volterra_securemesh_site_v2.smsv2-site-object]
+check "valid_security_group_configuration" {
+  assert {
+    condition = (
+      (var.security_group_config.create_slo_sg && length(var.security_group_config.existing_slo_sg_id) == 0) ||
+      (!var.security_group_config.create_slo_sg && length(var.security_group_config.existing_slo_sg_id) > 0)
+    )
+    error_message = "Invalid SLO NSG config: If 'create_slo_sg' is true, 'existing_slo_sg_id' must be empty. If 'create_slo_sg' is false, 'existing_slo_sg_id' must be provided."
+  }
 }
 
+################################################################################
+# 1. F5 XC VIRTUAL SITE LABELS
+################################################################################
 
-##############################################################################################################################
-# BLOCK 3 # NETWORK SECURITY GROUP SLO
-##############################################################################################################################
+resource "volterra_known_label_key" "smsv2-vsite_key" {
+  count = var.deployment_model == "vsite" ? 1 : 0
+
+  key         = "${var.cluster_name}-vsite"
+  namespace   = "shared"
+  description = "key used for v-site creation"
+}
+
+resource "volterra_known_label" "smsv2-vsite_label" {
+  count = var.deployment_model == "vsite" ? 1 : 0
+
+  key         = volterra_known_label_key.smsv2-vsite_key[0].key
+  namespace   = "shared"
+  value       = "true"
+  description = "label used for v-site creation"
+  depends_on  = [volterra_known_label_key.smsv2-vsite_key]
+}
+
+################################################################################
+# 2. AZURE NETWORK SECURITY GROUPS
+################################################################################
 
 resource "azurerm_network_security_group" "slo_nsg" {
   count               = var.security_group_config.create_slo_sg ? 1 : 0
@@ -78,9 +83,6 @@ resource "azurerm_network_security_group" "slo_nsg" {
   }, var.tags)
 }
 
-##############################################################################################################################
-# BLOCK 4 # NETWORK SECURITY GROUP SLI
-##############################################################################################################################
 resource "azurerm_network_security_group" "sli_nsg" {
   count               = var.num_nics == 2 && var.security_group_config.create_sli_sg ? 1 : 0
   name                = "${var.cluster_name}-sli-nsg"
@@ -116,11 +118,62 @@ resource "azurerm_network_security_group" "sli_nsg" {
   }, var.tags)
 }
 
+################################################################################
+# 3. AZURE NETWORKING (Public IPs & NICs)
+################################################################################
 
+resource "azurerm_public_ip" "public_ips" {
+  count               = var.public_ip_config.create_public_ip ? var.num_nodes : 0
+  name                = "${var.cluster_name}-public-ip-${count.index + 1}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  zones               = [var.az_name[count.index]]
 
-##############################################################################################################################
-# BLOCK 5 # SSH KEY
-##############################################################################################################################
+  tags = var.tags
+}
+
+resource "azurerm_network_interface" "nics" {
+  count               = var.num_nodes * var.num_nics
+  name                = "${var.cluster_name}-${count.index % var.num_nics == 0 ? "slo" : "sli"}-nic${floor(count.index / var.num_nics) + 1}"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = count.index % var.num_nics == 0 ? var.slo_subnet_ids[floor(count.index / var.num_nics)] : var.sli_subnet_ids[floor(count.index / var.num_nics)]
+    private_ip_address_allocation = "Dynamic"
+    
+    public_ip_address_id = count.index % var.num_nics == 0 && var.public_ip_config.create_public_ip ? azurerm_public_ip.public_ips[floor(count.index / var.num_nics)].id : null
+  }
+
+  tags = var.tags
+  depends_on = [azurerm_network_security_group.slo_nsg, azurerm_network_security_group.sli_nsg]
+}
+
+resource "azurerm_network_interface_security_group_association" "slo_nsg_associations" {
+  for_each = { for idx, nic in azurerm_network_interface.nics : idx => nic if idx % var.num_nics == 0 }
+
+  network_interface_id      = each.value.id
+  network_security_group_id = var.security_group_config.create_slo_sg ? azurerm_network_security_group.slo_nsg[0].id : var.security_group_config.existing_slo_sg_id
+
+  depends_on = [azurerm_network_security_group.slo_nsg, azurerm_network_interface.nics]
+}
+
+resource "azurerm_network_interface_security_group_association" "sli_nsg_associations" {
+  for_each = { for idx, nic in azurerm_network_interface.nics : idx => nic if idx % var.num_nics != 0 }
+
+  network_interface_id      = each.value.id
+  network_security_group_id = var.security_group_config.create_sli_sg ? azurerm_network_security_group.sli_nsg[0].id : var.security_group_config.existing_sli_sg_id
+
+  depends_on = [azurerm_network_security_group.sli_nsg, azurerm_network_interface.nics]
+}
+
+################################################################################
+# 4. AZURE SSH KEY MANAGEMENT
+################################################################################
+
 resource "null_resource" "generate_ssh_key" {
   count = var.public_key_config.create_new_keypair ? 1 : 0
 
@@ -129,12 +182,9 @@ resource "null_resource" "generate_ssh_key" {
     public_key_path  = "${path.module}/keys/${var.cluster_name}_key.pub"
   }
 
-  
   provisioner "local-exec" {
-  command = "mkdir -p \"${path.module}/keys\" && ssh-keygen -t rsa -b 4096 -f \"${self.triggers.private_key_path}\" -q -N \"\""
+    command = "mkdir -p \"${path.module}/keys\" && ssh-keygen -t rsa -b 4096 -f \"${self.triggers.private_key_path}\" -q -N \"\""
   }
-
-  
 
   provisioner "local-exec" {
     when    = destroy
@@ -143,7 +193,7 @@ resource "null_resource" "generate_ssh_key" {
 }
 
 data "local_file" "public_key" {
-  count     = var.public_key_config.create_new_keypair ? 1 : 0
+  count      = var.public_key_config.create_new_keypair ? 1 : 0
   depends_on = [null_resource.generate_ssh_key]
   filename   = "${path.module}/keys/${var.cluster_name}_key.pub"
 }
@@ -157,91 +207,74 @@ resource "azurerm_ssh_public_key" "ssh_key" {
   public_key          = data.local_file.public_key[0].content
 }
 
-
-# Fetch the existing public key content if needed
 data "azurerm_ssh_public_key" "existing_ssh_key" {
+  count               = var.public_key_config.create_new_keypair ? 0 : 1
   name                = var.public_key_config.existing_azure_ssh_key
   resource_group_name = var.resource_group_name
-  count               = var.public_key_config.create_new_keypair ? 0 : 1
-}
-##############################################################################################################################
-# BLOCK 6 # PUBLIC IP 
-##############################################################################################################################
-resource "azurerm_public_ip" "public_ips" {
-  count               = var.public_ip_config.create_public_ip ? var.num_nodes : 0
-  name                = "${var.cluster_name}-public-ip-${count.index + 1}"
-  location            = var.location
-  resource_group_name = var.resource_group_name
-  allocation_method   = "Static"
-  sku                 = "Standard"
-  zones               = [var.az_name[count.index]]
-
-  tags = var.tags
 }
 
+################################################################################
+# 5. F5 XC SITE & TOKEN
+################################################################################
 
-##############################################################################################################################
-# BLOCK 7 # NETWORK INTERFACE
-##############################################################################################################################
+resource "volterra_securemesh_site_v2" "smsv2-site-object" {
+  count     = var.deployment_model == "vsite" ? var.num_nodes : 1
+  name      = var.deployment_model == "vsite" ? "${var.cluster_name}-${count.index + 1}" : var.cluster_name
+  namespace = "system"
 
-resource "azurerm_network_interface" "nics" {
-  count               = var.num_nodes * var.num_nics
-  name                = "${var.cluster_name}-${count.index % var.num_nics == 0 ? "slo" : "sli"}-nic${floor(count.index / var.num_nics) + 1}"
-  location            = var.location
-  resource_group_name = var.resource_group_name
+  labels = var.deployment_model == "vsite" ? {
+    (volterra_known_label.smsv2-vsite_label[0].key) = (volterra_known_label.smsv2-vsite_label[0].value)
+  } : {}
+
+  block_all_services      = true
+  logs_streaming_disabled = true
   
-  ip_configuration {
-    name                          = "internal"
-    # Subnet Assignment (Select correct subnet from the list)
-    subnet_id                     = count.index % var.num_nics == 0 ? var.slo_subnet_ids[floor(count.index / var.num_nics)] : var.sli_subnet_ids[floor(count.index / var.num_nics)]
-    private_ip_address_allocation = "Dynamic"
+  disable_ha = var.deployment_model == "vsite" || (var.deployment_model == "cluster" && var.num_nodes == 1)
+  enable_ha  = var.deployment_model == "cluster" && var.num_nodes == 3
 
-    # Public IP Assignment
-        # Public IP Assignment
-public_ip_address_id = count.index % var.num_nics == 0 ? (var.public_ip_config.create_public_ip ? azurerm_public_ip.public_ips[floor(count.index / var.num_nics)].id : var.public_ip_config.existing_public_ip_ids[floor(count.index / var.num_nics)]) : null
+  azure {
+    not_managed {
+      dynamic "node_list" {
+        for_each = var.deployment_model == "cluster" ? range(var.num_nodes) : [count.index]
+        content {
+          hostname = "${var.cluster_name}-node-${node_list.value + 1}"
+          type     = "Control"
+
+          dynamic "interface_list" {
+            for_each = range(var.num_nics)
+            content {
+              name = interface_list.value == 0 ? "eth0" : "eth1"
+              ethernet_interface {
+                device = interface_list.value == 0 ? "eth0" : "eth1"
+              }
+              network_option {
+                site_local_network        = interface_list.value == 0
+                site_local_inside_network = interface_list.value == 1
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
+  lifecycle { ignore_changes = [labels] }
+  depends_on = [volterra_known_label.smsv2-vsite_label]
+}
+
+resource "volterra_token" "smsv2-token" {
+  count     = var.deployment_model == "vsite" ? var.num_nodes : 1
+  name      = "${volterra_securemesh_site_v2.smsv2-site-object[count.index].name}-token"
+  namespace = "system"
+  type      = 1
+  site_name = volterra_securemesh_site_v2.smsv2-site-object[count.index].name
   
-
-  tags = var.tags
-  depends_on = [azurerm_network_security_group.slo_nsg,azurerm_network_security_group.sli_nsg]
+  depends_on = [volterra_securemesh_site_v2.smsv2-site-object]
 }
 
-##############################################################################################################################
-# BLOCK 8 # Associate NSG with Network Interfaces
-##############################################################################################################################
-# For SLO NSG associations
-resource "azurerm_network_interface_security_group_association" "slo_nsg_associations" {
-  for_each = { for idx, nic in azurerm_network_interface.nics : idx => nic if idx % var.num_nics == 0 }
-
-  network_interface_id      = each.value.id
-  # CORRECTED a node's index is calculated by dividing the nic index by the number of nics per node.
-  network_security_group_id = var.security_group_config.create_slo_sg ? azurerm_network_security_group.slo_nsg[floor(each.key / var.num_nics)].id : var.security_group_config.existing_slo_sg_id
-
-  depends_on = [
-    azurerm_network_security_group.slo_nsg,
-    azurerm_network_interface.nics
-  ]
-}
-
-# For SLI NSG associations
-resource "azurerm_network_interface_security_group_association" "sli_nsg_associations" {
-  for_each = { for idx, nic in azurerm_network_interface.nics : idx => nic if idx % var.num_nics != 0 }
-
-  network_interface_id      = each.value.id
-  # CORRECTED a node's index is calculated by dividing the nic index by the number of nics per node.
-  network_security_group_id = var.security_group_config.create_sli_sg ? azurerm_network_security_group.sli_nsg[floor(each.key / var.num_nics)].id : var.security_group_config.existing_sli_sg_id
-
-  depends_on = [
-    azurerm_network_security_group.sli_nsg,
-    azurerm_network_interface.nics
-  ]
-}
-
-
-##############################################################################################################################
-# BLOCK 9 # VIRTUAL MACHINES
-##############################################################################################################################
+################################################################################
+# 6. AZURE COMPUTE (Virtual Machines)
+################################################################################
 
 resource "azurerm_linux_virtual_machine" "vm" {
   count               = var.num_nodes
@@ -249,13 +282,14 @@ resource "azurerm_linux_virtual_machine" "vm" {
   location            = var.location
   resource_group_name = var.resource_group_name
   admin_username      = "cloud-user"
+  size                = var.vm_size
+  zone                = var.az_name[count.index]
+
   network_interface_ids = slice(
     azurerm_network_interface.nics[*].id,
     count.index * var.num_nics,
     (count.index + 1) * var.num_nics
   )
-   size             = var.vm_size
-   zone = var.az_name[count.index] 
 
   source_image_reference {
     publisher = var.image.publisher
@@ -265,39 +299,54 @@ resource "azurerm_linux_virtual_machine" "vm" {
   }
 
   os_disk {
-    caching           = "ReadWrite"
-    disk_size_gb      = var.os_disk.size_gb
+    caching              = "ReadWrite"
     storage_account_type = var.os_disk.type
+    disk_size_gb         = var.os_disk.size_gb
   }
 
-   custom_data = base64encode(<<-EOF
+  custom_data = base64encode(<<-EOF
     #cloud-config
     write_files:
     - path: /etc/vpm/user_data
       content: |
-        token: ${volterra_token.smsv2-token.id}
+        token: ${var.deployment_model == "cluster" ? volterra_token.smsv2-token[0].id : volterra_token.smsv2-token[count.index].id}
       owner: root
       permissions: '0644'
   EOF
   )
-   admin_ssh_key {
+
+  admin_ssh_key {
     username   = "cloud-user"
-        public_key = var.public_key_config.create_new_keypair ? azurerm_ssh_public_key.ssh_key[0].public_key : data.azurerm_ssh_public_key.existing_ssh_key[0].public_key
-}
+    public_key = var.public_key_config.create_new_keypair ? azurerm_ssh_public_key.ssh_key[0].public_key : data.azurerm_ssh_public_key.existing_ssh_key[0].public_key
+  }
 
-
-
-   plan {
+  plan {
     name      = var.image.sku
     publisher = var.image.publisher
     product   = var.image.offer
   }
 
-  
-    
-  depends_on = [volterra_token.smsv2-token]
+  lifecycle {
+    ignore_changes = [custom_data]
+  }
 
-  tags = var.tags
+  depends_on = [volterra_token.smsv2-token]
+  tags       = var.tags
 }
 
+################################################################################
+# 7. F5 XC VIRTUAL SITE
+################################################################################
 
+resource "volterra_virtual_site" "smsv2-vsite" {
+  count     = var.deployment_model == "vsite" ? 1 : 0
+  name      = "${var.cluster_name}-vsite"
+  namespace = "shared"
+  site_type = "CUSTOMER_EDGE"
+  
+  site_selector {
+    expressions = ["${var.cluster_name}-vsite in (true)"]
+  }
+
+  depends_on = [volterra_known_label.smsv2-vsite_label]
+}
