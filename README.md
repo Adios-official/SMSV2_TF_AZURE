@@ -87,7 +87,22 @@ The `public_ip_config` object controls how Azure Public IPs are assigned to the 
 * `provider.tf`: Declarations for `azurerm` and `volterra` providers.
 * `terraform.tfvars`: User-defined values for the deployment.
 * `outputs.tf`: Formatted outputs for IPs and site names.
+* `/keys`: (Generated) Directory containing your local SSH key pair.
 * `README.md`: This file.
+
+---
+
+## SSH Key Management
+
+This project handles SSH access based on your `public_key_config` setting:
+
+1. **Automatic Generation (`create_new_keypair = true`):**
+   * Terraform will create a subdirectory named `keys` in your project folder.
+   * It will generate a private key (`<cluster_name>_key`) and a public key (`<cluster_name>_key.pub`) inside that folder.
+   * **Security Note:** The private key is stored in plain text. Ensure the `keys/` folder is added to your `.gitignore` to prevent committing sensitive keys to version control.
+
+2. **Manual Key (`create_new_keypair = false`):**
+   * Terraform will look for an existing SSH Public Key resource already uploaded to Azure using the name provided in `existing_azure_ssh_key`.
 
 ---
 
