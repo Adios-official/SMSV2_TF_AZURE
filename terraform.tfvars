@@ -69,7 +69,7 @@ image = {
 
 # Root disk configuration for each node
 os_disk = {
-  size_gb = 80             # Disk size in GB (min 120 GB)
+  size_gb = 120             # Disk size in GB (min 120 GB)
   type    = "Standard_LRS" # Azure Storage Account type (Standard_LRS, Premium_LRS, etc.)
 }
 
