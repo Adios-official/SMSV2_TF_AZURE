@@ -67,6 +67,22 @@ image = {
   version   = "9.2025.17" # Replace with latest version from F5 XC documentation
 }
 
+#-------------------------------------------------------------------------------
+# NOTE ON FINDING THE LATEST IMAGE:
+# You can use the Azure CLI to find the latest F5 XC CE Image in your target region.
+# Example (adjust --location as needed):
+#
+# az vm image list \
+#    --location "germanywestcentral" \
+#    --publisher "f5-networks" \
+#    --offer "f5xc_customer_edge" \
+#    --sku "f5xccebyol" \
+#    --all \
+#    --query "reverse(sort_by(@, &version))[].{Publisher:publisher, Offer:offer, SKU:sku, Version:version}" \
+#    --output table
+#
+#-------------------------------------------------------------------------------
+
 # Root disk configuration for each node
 os_disk = {
   size_gb = 120             # Disk size in GB (min 120 GB)
