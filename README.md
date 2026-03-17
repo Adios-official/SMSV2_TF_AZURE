@@ -15,6 +15,8 @@ This single codebase handles:
   * [Deployment Model: Cluster vs. vSite](#1-deployment-model-cluster-vs-vsite)
   * [Networking: Public IP vs. NAT Gateway](#2-networking-public-ip-vs-nat-gateway)
   * [Node & NIC Count](#3-node--nic-count)
+  * [Security & Implementation Architecture](#-security--implementation-architecture)
+  * [Pre-Implementation Checklist](#-pre-implementation-checklist)
 * [Prerequisites](#prerequisites)
 * [File Structure](#file-structure)
 * [How to Deploy](#how-to-deploy)
@@ -69,6 +71,39 @@ The `public_ip_config` object controls how Azure Public IPs are assigned to the 
 * `num_nics`: Number of Azure Network Interfaces per VM.
     * `1`: SLO (eth0) only.
     * `2`: SLO (eth0) + SLI (eth1).
+
+---
+
+## Security & Implementation Architecture
+
+This deployment implements a **Zero-Trust egress model**. Unlike standard "allow-all" deployments, this configuration "pins" the Azure Network Security Groups (NSGs) to the official F5 Distributed Cloud (XC) technical reference for Secure Mesh Site v2 (SMSv2).
+
+### 1. Hardened NSG Logic
+The SLO (Site Local Outside) interface acts as the security gateway for the node.
+
+* **Inbound XC Tunneling (UDP 4500):** Strictly restricted to the F5 Regional Edge (RE) IP ranges defined in the documentation. This allows the Global Fabric to orchestrate tunnels while blocking unauthorized connection attempts.
+* **Cluster HA Synchronization:** Restricted to the `VirtualNetwork` service tag. This ensures that node-to-node heartbeats, BGP peering, and Etcd synchronization are contained within the private Azure backbone.
+* **Management (TCP 22):** ⚠️Enabled for administrative access.⚠️ 
+    > **⚠️ Hardening Tip:** In production, you should modify the `source_address_prefix` in the NSG to your specific Public IP or jump-box CIDR.
+
+### 2. Pinned Egress (Outbound)
+* **F5 XC Control Plane:** The node is permitted to reach the F5 Registration VIP (`159.60.141.140`) and Regional Edges only.
+* **Mandatory Services:** Access to **DNS (53)** and **NTP (123)** is enforced. Precise time synchronization is a prerequisite for TLS certificate validation; without it, the site will fail to come online.
+* **Explicit Deny:** A final `DenyAllOutbound` rule (Priority 1000) is applied, effectively turning the CE into a hardened appliance that cannot be used for unauthorized data exfiltration.
+
+---
+
+## Pre-Implementation Checklist
+
+Ensure the following requirements are met before running `terraform apply`:
+
+1.  **Accept Marketplace Terms:** You must accept the legal terms for the F5 XC Image once per subscription:
+    ```bash
+    az vm image terms accept --publisher f5-networks --offer f5xc_customer_edge --plan f5xccebyol
+    ```
+2.  **⚠️Locals Configuration:⚠️** Ensure the `locals.tf` (or the locals block in `main.tf`) contains the updated IP ranges for the F5 Regional Edges as per the latest [F5 XC IP/Domain Reference](https://docs.cloud.f5.com/docs-v2/multi-cloud-network-connect/reference/ce-ip-dom-ref).
+3.  **⚠️Upstream Firewalls⚠️:** If your Azure environment uses a Centralized Firewall (NVA/Azure Firewall), ensure the IP ranges defined in the configuration are allowed in the upstream policy.
+4.  **DNS Reachability:** If you are not using Google DNS (`8.8.8.8`), update the `xc_dns_ips` logic to your internal DNS. The node **must** resolve `*.ves.volterra.io`.
 
 ---
 
