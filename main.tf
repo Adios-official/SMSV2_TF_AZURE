@@ -1,4 +1,49 @@
 ################################################################################
+# LOCALS: F5 XC IP REFS
+# 
+# These values are derived from the official F5 Distributed Cloud Technical 
+# Documentation (tdoc) for "Secure Mesh Site v2". They define the "Trust Boundary" 
+# for the CE node egress and ingress.
+################################################################################
+
+locals {
+  # --- CONTROL PLANE: SITE REGISTRATION & UPDATES ---
+  # This single IP is the global entry point for the Secure Mesh Site v2 
+  # registration workflow. The CE node must reach this via TCP 443 to receive 
+  # its configuration and software identity.
+  xc_registration_ips = ["159.60.141.140/32"]
+
+  # --- DATA PLANE: REGIONAL EDGES (REs) ---
+  # These ranges represent the F5 Global Fabric. By pinning the NSG to these 
+  # subnets, we ensure the CE node only establishes tunnels (UDP 4500) or 
+  # API connections (TCP 443) with verified F5 Regional Edges.
+  #
+  # HARDENING NOTE: If you are deploying in a specific geo only (e.g., Europe), 
+  # you could technically remove the other regions, but keeping all ensures 
+  # Global Mesh and failover capability.
+  xc_re_ips = [
+    # Americas RE Ranges
+    "5.182.215.0/25", "84.54.61.0/25", "23.158.32.0/25", "84.54.62.0/25", "185.94.142.0/25",
+    "185.94.143.0/25", "159.60.190.0/24", "159.60.168.0/24", "159.60.180.0/24", "159.60.174.0/24", "159.60.176.0/24",
+    
+    # Europe RE Ranges
+    "5.182.213.0/25", "5.182.212.0/25", "5.182.213.128/25", "5.182.214.0/25", "84.54.60.0/25",
+    "185.56.154.0/25", "159.60.160.0/24", "159.60.162.0/24", "159.60.188.0/24", "159.60.182.0/24", "159.60.178.0/24",
+    
+    # Asia RE Ranges
+    "103.135.56.0/25", "103.135.57.0/25", "103.135.56.128/25", "103.135.59.0/25", "103.135.58.128/25",
+    "103.135.58.0/25", "159.60.189.0/24", "159.60.166.0/24", "159.60.164.0/24", "159.60.170.0/24",
+    "159.60.172.0/24", "159.60.191.0/24", "159.60.184.0/24", "159.60.186.0/24"
+  ]
+
+  # --- CORE SERVICES: DNS ---
+  # F5 XC nodes require DNS to resolve tenant-specific FQDNs (*.ves.volterra.io).
+  # If your Azure VNet does not provide a custom DNS resolver, these Google 
+  # Public DNS IPs are the fallback standard for registration.
+  xc_dns_ips = ["8.8.8.8/32", "8.8.4.4/32"]
+}
+
+################################################################################
 # 0. INPUT VALIDATIONS
 ################################################################################
 
@@ -54,23 +99,111 @@ resource "azurerm_network_security_group" "slo_nsg" {
   location            = var.location
   resource_group_name = var.resource_group_name
 
+  #-----------------------------------------------------------------------------
+  # INBOUND RULES (WAN / SLO)
+  #-----------------------------------------------------------------------------
+
+  # Allow Inbound Tunneling from REs (Required for Site Mesh/Direct Orchestration)
+  # NOTE: Restricting source to local.xc_re_ips ensures only F5-managed infrastructure
+  # can attempt to initiate a tunnel connection.
   security_rule {
-    name                       = "allow-all-inbound"
-    priority                   = 100
+    name                        = "allow-xc-tunnel-inbound"
+    priority                    = 100
+    direction                   = "Inbound"
+    access                      = "Allow"
+    protocol                    = "Udp"
+    source_port_range           = "1024-65535"
+    destination_port_range      = "4500"
+    source_address_prefixes     = local.xc_re_ips
+    destination_address_prefix  = "*"
+  }
+
+  # Allow Internal HA/Cluster Traffic
+  # NOTE: Uses the 'VirtualNetwork' service tag to ensure nodes can communicate
+  # securely with each other for HA heartbeats and state synchronization.
+  security_rule {
+    name                       = "allow-internal-cluster-traffic"
+    priority                   = 110
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
-    source_address_prefix      = "*"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
+  }
+
+  # Allow SSH for Management
+  # HARDENING NOTE: It is STRONGLY recommended to change 'source_address_prefix' 
+  # from "*" to your specific administrative Public IP address (e.g., "x.x.x.x/32")
+  # to prevent brute-force attacks from the internet.
+  security_rule {
+    name                       = "allow-ssh-inbound"
+    priority                   = 120
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "22"
+    source_address_prefix      = "*" 
     destination_address_prefix = "*"
   }
 
+  #-----------------------------------------------------------------------------
+  # OUTBOUND RULES (WAN / SLO)
+  #-----------------------------------------------------------------------------
+
+  # Allow Outbound to Registration Service (TCP 443)
+  # NOTE: Mandatory for initial 'call home' registration and software upgrades.
   security_rule {
-    name                       = "allow-all-outbound"
-    priority                   = 101
+    name                        = "allow-xc-registration-outbound"
+    priority                    = 200
+    direction                   = "Outbound"
+    access                      = "Allow"
+    protocol                    = "Tcp"
+    source_port_range           = "1024-65535"
+    destination_port_range      = "443"
+    source_address_prefix       = "*"
+    destination_address_prefixes = local.xc_registration_ips
+  }
+
+  # Allow Outbound to Regional Edges (TCP 443 & UDP 4500)
+  # NOTE: 4500 (UDP) is for the data plane tunnel; 443 (TCP) is for the control plane.
+  security_rule {
+    name                        = "allow-xc-re-outbound"
+    priority                    = 210
+    direction                   = "Outbound"
+    access                      = "Allow"
+    protocol                    = "*"
+    source_port_range           = "1024-65535"
+    destination_port_ranges     = ["443", "4500"]
+    source_address_prefix       = "*"
+    destination_address_prefixes = local.xc_re_ips
+  }
+
+  # Allow Outbound DNS & NTP
+  # NOTE: UDP 123 (NTP) is critical. If clocks drift, SSL/TLS certificates 
+  # will fail validation and the site will not come online.
+  security_rule {
+    name                        = "allow-dns-ntp-outbound"
+    priority                    = 220
+    direction                   = "Outbound"
+    access                      = "Allow"
+    protocol                    = "Udp"
+    source_port_range           = "1024-65535"
+    destination_port_ranges     = ["53", "123"]
+    source_address_prefix       = "*"
+    destination_address_prefixes = local.xc_dns_ips
+  }
+
+  # Final Hardening: Deny all other outbound
+  # NOTE: This overrides default Azure 'AllowInternetOutbound' to ensure the 
+  # node cannot be used for unauthorized data exfiltration.
+  security_rule {
+    name                       = "deny-all-outbound"
+    priority                   = 1000
     direction                  = "Outbound"
-    access                     = "Allow"
+    access                     = "Deny"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
@@ -83,22 +216,29 @@ resource "azurerm_network_security_group" "slo_nsg" {
   }, var.tags)
 }
 
+#-------------------------------------------------------------------------------
+# SLI SECURITY GROUP (LAN / Inside)
+#-------------------------------------------------------------------------------
+
 resource "azurerm_network_security_group" "sli_nsg" {
   count               = var.num_nics == 2 && var.security_group_config.create_sli_sg ? 1 : 0
   name                = "${var.cluster_name}-sli-nsg"
   location            = var.location
   resource_group_name = var.resource_group_name
 
+  # Allow only local VNet traffic to reach internal interfaces
+  # NOTE: This prevents external entities from attempting to access your 
+  # internal application workloads via the SLI interface.
   security_rule {
-    name                       = "allow-all-inbound"
+    name                       = "allow-vnet-inbound"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "*"
     source_port_range          = "*"
     destination_port_range     = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "VirtualNetwork"
   }
 
   security_rule {
